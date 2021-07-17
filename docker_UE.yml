@@ -1,0 +1,276 @@
+---
+-   hosts: 127.0.0.1
+    connection: local
+    become: yes
+    remote_user: root
+    vars:
+        force_docker_reinstall: 'false'
+        num_ues_init_config_file: '8'
+        BASE_DIR_INSTALL: 'NetSoft2020Demo1Tutorial4InstallDir'
+        ip_address_inactive_AMF: '192.188.3.2'
+        ip_address_OAISIM_ENB: '192.188.3.253'
+        ip_address_OAISIM_UE: '192.188.3.254'
+        oaisim_ue_image_name: 'laboraufg/ue-openairsim'
+        UE_container_name: 'ue'
+        UE_folder_name_container_name: '/root/ue/'
+        clear_file_instalation: 'true'
+        HPLMN : "20893"
+        USIM_API_K : "8baf473f2f8fd09487cccbd7097c6862"
+        OPC : "e734f8734007d6c5ce7a0508809e7e9c"
+        user_equiments:
+            - { ue_id: UE0 ,   msin: '0000000001' }
+            - { ue_id: UE1 ,   msin: '0000000002' }
+    tasks:
+        - name: Environment validation!
+          assert:
+            that:
+              - ansible_memtotal_mb >= 3500
+            msg: "Minimum memory requirements in the deployment environment is 4GB! Operation failed!"
+
+        - name  : Remove old instalation
+          shell :  |
+                sudo rm -rf {{ BASE_DIR_INSTALL }}
+                
+        - name  : Remove docker installation
+          shell :  |
+                sudo apt autoremove -y --purge docker-engine docker docker.io docker-ce 
+                sudo apt update
+          when: force_docker_reinstall == 'true'
+        
+        - name  : Install Basic requirements
+          apt   :
+                name: ['openssh-client', 'net-tools', 'apt-transport-https', 'ca-certificates', 'curl', 'gnupg2', 'software-properties-common', 'python-setuptools', 'python3-pip']
+                state: present
+                update_cache: yes
+                
+        - name  : Create dir instalation
+          file  :
+            path: "{{ BASE_DIR_INSTALL }}"
+            state: directory
+        
+        - name  : Add Docker GPG key into apt
+          apt_key: url=https://download.docker.com/linux/ubuntu/gpg
+
+        - name  : Add Docker APT repository
+          apt_repository:
+            repo: deb [arch=amd64] https://download.docker.com/linux/ubuntu {{ansible_distribution_release}} edge
+
+        - name  : Update APT
+          shell :  |
+                sudo apt update
+
+        - name  : Install Docker - CE
+          apt:
+            name: ['docker-ce', 'docker-ce-cli', 'containerd.io']
+            state: present
+            update_cache: yes
+
+        - name  : Stop UE container - If exists
+          ignore_errors: true
+          shell:  |
+                docker stop -t 1 {{ UE_container_name }}
+
+        - name  : Run doker prune in stoped containers
+          ignore_errors: true
+          shell:  |
+                docker container prune -f
+
+        - name  : Remove ue-openairsim image
+          ignore_errors: true
+          shell:  |
+                docker image rm {{ oaisim_enb_image_name }}
+          when: force_docker_reinstall == 'true'
+
+        - name  : Run OpenAirSIM-UE container
+          shell :  |
+                docker run -ti -d --cap-add=NET_ADMIN --privileged --network host --name {{ UE_container_name }} {{ oaisim_ue_image_name }} bash
+
+        - name  : Build UE ue.nfapi.conf file 1/3 
+          shell : |
+                  docker exec {{ UE_container_name }} /bin/sh -c "rm {{ UE_folder_name_container_name }}/ci-scripts/conf_files/ue.nfapi.conf"
+
+        - name  : Build UE ue.nfapi.conf file 2/3
+          copy:
+            dest: "{{ BASE_DIR_INSTALL }}/ue.nfapi.conf"
+            content: |
+                log_config = {
+                  global_log_level                      ="info";
+                  global_log_verbosity                  ="medium";
+                  hw_log_level                          ="info";
+                  hw_log_verbosity                      ="medium";
+                  phy_log_level                         ="info";
+                  phy_log_verbosity                     ="medium";
+                  mac_log_level                         ="info";
+                  mac_log_verbosity                     ="medium";
+                  rlc_log_level                         ="info";
+                  rlc_log_verbosity                     ="medium";
+                  pdcp_log_level                        ="info";
+                  pdcp_log_verbosity                    ="medium";
+                  rrc_log_level                         ="info";
+                  rrc_log_verbosity                     ="full";
+                };
+
+
+                L1s = (
+                        {
+                        num_cc = 1;
+                        tr_n_preference = "nfapi";
+                        local_n_if_name  = "ens33";
+                        remote_n_address = "{{ ip_address_OAISIM_ENB }}";
+                        local_n_address  = "{{ ip_address_OAISIM_UE }}";
+                        local_n_portc    = 50000;
+                        remote_n_portc   = 50001;
+                        local_n_portd    = 50010;
+                        remote_n_portd   = 50011;
+                        }  
+                );
+
+                RUs = (
+                    {		  
+                      local_rf       = "yes"
+                      nb_tx          = 1
+                      nb_rx          = 1
+                      att_tx         = 90
+                      att_rx         = 0;
+                      bands          = [7,38,42,43];
+                      max_pdschReferenceSignalPower = -27;
+                      max_rxgain                    = 125;
+                    }		      
+                );
+        
+        - name  : Build UE ue.nfapi.conf file 3/3 
+          shell : |
+                docker cp ./ue.nfapi.conf {{ UE_container_name }}:/{{ UE_folder_name_container_name }}/ci-scripts/conf_files/ue.nfapi.conf
+          args:
+            chdir: "{{ BASE_DIR_INSTALL }}"
+
+        - name  : Build UE ue_eurecom_test_sfr.conf file 1/5 
+          shell : |
+                  docker exec {{ UE_container_name }} /bin/sh -c "rm {{ UE_folder_name_container_name }}/openair3/NAS/TOOLS/ue_eurecom_test_sfr.conf"
+
+        - name  : Build UE ue_eurecom_test_sfr.conf file 2/5 
+          copy:
+            dest: "{{ BASE_DIR_INSTALL }}/ue_eurecom_test_sfr.conf"
+            content: |
+                # List of known PLMNS
+                PLMN: {
+                    PLMN0: {
+                        FULLNAME="Test network";
+                        SHORTNAME="OAI4G";
+                        MNC="01";
+                        MCC="001";
+
+                    };
+                    PLMN1: {
+                        FULLNAME="SFR France";
+                        SHORTNAME="SFR";
+                        MNC="10";
+                        MCC="208";
+
+                    };
+                    PLMN2: {
+                        FULLNAME="SFR France";
+                        SHORTNAME="SFR";
+                        MNC="11";
+                        MCC="208";
+                    };
+                    PLMN3: {
+                        FULLNAME="SFR France";
+                        SHORTNAME="SFR";
+                        MNC="13";
+                        MCC="208";
+                    };
+                    PLMN4: {
+                        FULLNAME="OAI LTEBOX";
+                        SHORTNAME="OAIALU";
+                        MNC="93";
+                        MCC="208";
+                    };
+                    PLMN5: {
+                        FULLNAME="T-Mobile USA";
+                        SHORTNAME="T-Mobile";
+                        MNC="280";
+                        MCC="310";
+                    };
+                    PLMN6: {
+                        FULLNAME="FICTITIOUS USA";
+                        SHORTNAME="FICTITIO";
+                        MNC="028";
+                        MCC="310";
+                    };
+                    PLMN7: {
+                        FULLNAME="Vodafone Italia";
+                        SHORTNAME="VODAFONE";
+                        MNC="10";
+                        MCC="222";
+                    };
+                    PLMN8: {
+                        FULLNAME="Vodafone Spain";
+                        SHORTNAME="VODAFONE";
+                        MNC="01";
+                        MCC="214";
+                    };
+                    PLMN9: {
+                        FULLNAME="Vodafone Spain";
+                        SHORTNAME="VODAFONE";
+                        MNC="06";
+                        MCC="214";
+                    };
+                    PLMN10: {
+                        FULLNAME="Vodafone Germ";
+                        SHORTNAME="VODAFONE";
+                        MNC="02";
+                        MCC="262";
+                    };
+                    PLMN11: {
+                        FULLNAME="Vodafone Germ";
+                        SHORTNAME="VODAFONE";
+                        MNC="04";
+                        MCC="262";
+                    };
+                };
+
+        - name  : Build UE ue_eurecom_test_sfr.conf file 3/5
+          blockinfile:
+            path: ./{{ BASE_DIR_INSTALL }}/ue_eurecom_test_sfr.conf
+            block: |
+                {{ item.ue_id }}:
+                  {
+                        USER: {
+                            IMEI="356113022094149";
+                            MANUFACTURER="EURECOM";
+                            MODEL="LTE Android PC";
+                            PIN="0000";
+                        };
+                        SIM: {
+                            MSIN="{{ item.msin }}";
+                            USIM_API_K="{{ USIM_API_K }}";
+                            OPC="{{ OPC }}";
+                            MSISDN="33638020004";
+                        };
+                        HPLMN= "{{ HPLMN }}";
+                        UCPLMN_LIST = ();
+                        OPLMN_LIST = ("00101", "20810", "20811", "20813", "20893", "310280", "310028");
+                        OCPLMN_LIST = ("22210", "21401", "21406", "26202", "26204");
+                        FPLMN_LIST = ();
+                        EHPLMN_LIST= ();
+                    };
+            marker: "# {mark} User Equipment {{ item.ue_id }}"
+          loop: "{{ user_equiments }}"
+          loop_control:
+            index_var: ue_idx
+          when: "ue_idx|int < {{ num_ues_init_config_file }}"
+        
+        - name  : Build UE ue_eurecom_test_sfr.conf file 4/5 
+          shell : |
+                docker cp ./ue_eurecom_test_sfr.conf {{ UE_container_name }}:/{{ UE_folder_name_container_name }}/openair3/NAS/TOOLS/ue_eurecom_test_sfr.conf
+          args:
+            chdir: "{{ BASE_DIR_INSTALL }}"
+
+        - name  : Build UE ue_eurecom_test_sfr.conf file 5/5 
+          shell : |
+                  docker exec {{ UE_container_name }} /bin/sh -c "cd /{{ UE_folder_name_container_name }}/targets/bin && sudo ./conf2uedata -c /{{ UE_folder_name_container_name }}/openair3/NAS/TOOLS/ue_eurecom_test_sfr.conf -o /{{ UE_folder_name_container_name }}/cmake_targets/ran_build/build/"
+
+        - name  : Clear file instalation
+          shell : rm -rf {{ BASE_DIR_INSTALL }}
+          when  : clear_file_instalation == 'true'
